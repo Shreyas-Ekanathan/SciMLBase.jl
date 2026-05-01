@@ -58,6 +58,34 @@ function ChainRulesCore.rrule(
     return VA[sym, j], ODESolution_getindex_pullback
 end
 
+# `sol[i::Integer]`: under RecursiveArrayTools v4 `AbstractVectorOfArray`
+# subtypes `AbstractArray`, so linear integer indexing returns the i-th
+# scalar element in column-major order over the underlying state-by-time
+# layout, NOT the i-th timestep vector. A dedicated rrule is still
+# needed to keep dispatch from falling through to the broader
+# `getindex(VA::ODESolution, sym)` rule below (which would mis-interpret
+# `i` as a state-variable index; #1325). The pullback scatters the
+# scalar cotangent into the matching slot of `VA.u`.
+function ChainRulesCore.rrule(::typeof(getindex), VA::ODESolution, i::Integer)
+    inds = Tuple(CartesianIndices(size(VA))[i])
+    front_inds = Base.front(inds)
+    step_idx = last(inds)
+    y = VA.u[step_idx][front_inds...]
+    function ODESolution_scalar_pullback(Δ)
+        Δ′ = map(enumerate(VA.u)) do (k, x)
+            if k == step_idx
+                δu = zero(x)
+                δu[front_inds...] = Δ
+                δu
+            else
+                zero(x)
+            end
+        end
+        return (NoTangent(), Δ′, NoTangent())
+    end
+    return y, ODESolution_scalar_pullback
+end
+
 function ChainRulesCore.rrule(::typeof(getindex), VA::ODESolution, sym)
     function ODESolution_getindex_pullback(Δ)
         i = symbolic_type(sym) != NotSymbolic() ? variable_index(VA, sym) : sym

@@ -27,7 +27,10 @@ function augment(
         discretes = nothing
     ) where {T, N, Q, B}
     p = hasproperty(sol.prob, :p) ? sol.prob.p : nothing
-    return DiffEqArray(A.u, A.t, p, sol; discretes)
+    return DiffEqArray(
+        A.u, A.t, p, sol; discretes,
+        interp = sol.interp, dense = sol.dense
+    )
 end
 
 # SymbolicIndexingInterface.jl
@@ -183,13 +186,7 @@ function Base.show(io::IO, m::MIME"text/plain", A::AbstractTimeseriesSolution)
     return show(io, m, A.u)
 end
 
-RecursiveArrayTools.tuples(sol::AbstractTimeseriesSolution) = tuple.(sol.u, sol.t)
 
-function Base.iterate(sol::AbstractTimeseriesSolution, state = 0)
-    state >= length(sol) && return nothing
-    state += 1
-    return (solution_new_tslocation(sol, state), state)
-end
 
 function Base.show(io::IO, m::MIME"text/plain", A::AbstractPDESolution)
     println(io, string("retcode: ", A.retcode))
@@ -232,8 +229,8 @@ plottable_indices(x::Number) = 1
             sol.tslocation == 0 ?
                 (
                     sol.prob isa AbstractDiscreteProblem ?
-                    max(1000, 100 * length(sol)) :
-                    max(1000, 10 * length(sol))
+                    max(1000, 100 * length(sol.t)) :
+                    max(1000, 10 * length(sol.t))
                 ) :
                 1000 * sol.tslocation
         ), plotat = nothing,
@@ -423,7 +420,7 @@ function diffeq_to_arrays(
     )
     if tspan === nothing
         if sol.tslocation == 0
-            end_idx = length(sol)
+            end_idx = length(sol.t)
         else
             end_idx = sol.tslocation
         end

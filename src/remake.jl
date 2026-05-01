@@ -259,13 +259,6 @@ function remake(
         T = parameterless_type(func)
     end
 
-    # minor hack to avoid breaking MTK, since prior to ~9.57 in `remake_initialization_data`
-    # it creates a `NonlinearFunction` inside a `NonlinearFunction`. Just recursively unwrap
-    # in this case and forget about properties.
-    while !is_split_function(T) && f isa AbstractSciMLFunction
-        f = isdefined(f, :f) ? f.f : f.f1
-    end
-
     props = @delete props.f
     props = @delete props.f1
 
@@ -435,60 +428,31 @@ function SciMLBase.remake(
 end
 
 """
-    remake_initializeprob(sys, scimlfn, u0, t0, p)
+    $TYPEDEF
 
-!!! warning
-    This method is deprecated. Please see `remake_initialization_data`
-
-Re-create the initialization problem present in the function `scimlfn`, using the
-associated system `sys`, and the user-provided new values of `u0`, initial time `t0` and
-`p`. By default, returns `nothing, nothing, nothing, nothing` if `scimlfn` does not have an
-initialization problem, and
-`scimlfn.initializeprob, scimlfn.update_initializeprob!, scimlfn.initializeprobmap, scimlfn.initializeprobpmap`
-if it does.
-
-Note that `u0` or `p` may be `missing` if the user does not provide a value for them.
+Additional information passed to `remake_initialization_data` which influences behavior of
+implementors. Currently does not contain any fields.
 """
-function remake_initializeprob(sys, scimlfn, u0, t0, p)
-    if !has_initialization_data(scimlfn)
-        return nothing, nothing, nothing, nothing
-    end
-    initdata = scimlfn.initialization_data
-    return initdata.initializeprob, initdata.update_initializeprob!,
-        initdata.initializeprobmap, initdata.initializeprobpmap
-end
+struct RemakeInitializationDataContext end
 
 """
-    $(TYPEDSIGNATURES)
-
-Wrapper around `remake_initialization_data` for backward compatibility when `newu0` and
-`newp` were not arguments.
-"""
-function remake_initialization_data_compat_wrapper(sys, scimlfn, u0, t0, p, newu0, newp)
-    return if hasmethod(
-            remake_initialization_data,
-            Tuple{typeof(sys), typeof(scimlfn), typeof(u0), typeof(t0), typeof(p)}
-        )
-        remake_initialization_data(sys, scimlfn, u0, t0, p)
-    else
-        remake_initialization_data(sys, scimlfn, u0, t0, p, newu0, newp)
-    end
-end
-
-"""
-    remake_initialization_data(sys, scimlfn, u0, t0, p, newu0, newp)
+    remake_initialization_data(sys, scimlfn, u0, t0, p, newu0, newp, ctx::RemakeInitializationDataContext)
 
 Re-create the initialization data present in the function `scimlfn`, using the
 associated system `sys`, the user provided new values of `u0`, initial time `t0`,
 user-provided `p`, new u0 vector `newu0` and new parameter object `newp`. By default,
-this calls `remake_initializeprob` for backward compatibility and attempts to construct
-an `OverrideInitData` from the result.
+returns `nothing` if `scimlfn` does not have initialization data. 
 
 Note that `u0` or `p` may be `missing` if the user does not provide a value for them.
 """
-function remake_initialization_data(sys, scimlfn, u0, t0, p, newu0, newp)
+function remake_initialization_data(sys, scimlfn, u0, t0, p, newu0, newp, ctx::RemakeInitializationDataContext = RemakeInitializationDataContext())
+    if !has_initialization_data(scimlfn)
+        return nothing
+    end
+    initdata = scimlfn.initialization_data
     return reconstruct_initialization_data(
-        nothing, remake_initializeprob(sys, scimlfn, u0, t0, p)...
+        nothing, initdata.initializeprob, initdata.update_initializeprob!,
+        initdata.initializeprobmap, initdata.initializeprobpmap
     )
 end
 
@@ -1533,26 +1497,34 @@ function updated_u0_p(
 end
 
 """
+    $TYPEDEF
+
+Additional information passed to `late_binding_update_u0_p` which influences behavior of
+implementors. Currently does not contain any fields.
+"""
+struct LateBindingUpdateU0PContext end
+
+"""
     $(TYPEDSIGNATURES)
 
 A function to perform custom modifications to `newu0` and/or `newp` after they have been
 constructed in `remake`. `root_indp` is the innermost index provider found by recursively
 calling `SymbolicIndexingInterface.symbolic_container`, provided for dispatch. Returns
-the updated `newu0` and `newp`.
+the updated `newu0` and `newp`. 
 """
-function late_binding_update_u0_p(prob, root_indp, u0, p, t0, newu0, newp)
+function late_binding_update_u0_p(prob, root_indp, u0, p, t0, newu0, newp, ctx::LateBindingUpdateU0PContext = LateBindingUpdateU0PContext())
     return newu0, newp
 end
 
 """
     $(TYPEDSIGNATURES)
 
-Calls `late_binding_update_u0_p(prob, root_indp, u0, p, t0, newu0, newp)` after finding
+Calls `late_binding_update_u0_p(prob, root_indp, u0, p, t0, newu0, newp, ctx)` after finding
 `root_indp`.
 """
-function late_binding_update_u0_p(prob, u0, p, t0, newu0, newp)
+function late_binding_update_u0_p(prob, u0, p, t0, newu0, newp, ctx::LateBindingUpdateU0PContext = LateBindingUpdateU0PContext())
     root_indp = get_root_indp(prob)
-    return late_binding_update_u0_p(prob, root_indp, u0, p, t0, newu0, newp)
+    return late_binding_update_u0_p(prob, root_indp, u0, p, t0, newu0, newp, ctx)
 end
 
 # overloaded in MTK to intercept symbolic remake

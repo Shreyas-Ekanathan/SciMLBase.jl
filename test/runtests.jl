@@ -42,6 +42,9 @@ end
         @time @safetestset "Ensemble functionality" begin
             include("ensemble_tests.jl")
         end
+        @time @safetestset "Ensemble RNG unit tests" begin
+            include("ensemble_rng_unit.jl")
+        end
         @time @safetestset "Solution interface" begin
             include("solution_interface.jl")
         end
@@ -92,8 +95,14 @@ end
         @time @safetestset "Ensemble with DifferentialEquations automatic algorithm selection" begin
             include("downstream/ensemble_diffeq.jl")
         end
+        @time @safetestset "Ensemble RNG reproducibility" begin
+            include("downstream/ensemble_rng.jl")
+        end
         @time @safetestset "Solution Indexing" begin
             include("downstream/solution_interface.jl")
+        end
+        @time @safetestset "Plots / Makie plot recipes on multi-state ODE" begin
+            include("downstream/plot_lines.jl")
         end
         @time @safetestset "Unitful interpolations" begin
             include("downstream/unitful_interpolations.jl")
@@ -124,6 +133,9 @@ end
         end
         @time @safetestset "SplitODEProblem cache" begin
             include("downstream/splitodeproblem_cache.jl")
+        end
+        @time @safetestset "Scalar RODESolution calculate_solution_errors!" begin
+            include("downstream/rode_calculate_solution_errors.jl")
         end
     end
 

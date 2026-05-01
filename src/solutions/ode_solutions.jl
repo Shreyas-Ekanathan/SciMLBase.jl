@@ -145,21 +145,11 @@ function ConstructionBase.setproperties(sol::ODESolution, patch::NamedTuple)
     )
 end
 
-Base.@propagate_inbounds function Base.getproperty(x::AbstractODESolution, s::Symbol)
-    if s === :destats
-        Base.depwarn("`sol.destats` is deprecated. Use `sol.stats` instead.", "sol.destats")
-        return getfield(x, :stats)
-    elseif s === :ps
-        return ParameterIndexingProxy(x)
-    end
-    return getfield(x, s)
-end
 
-# FIXME: Remove the defaults for resid and original on a breaking release
 function ODESolution{T, N}(
         u, u_analytic, errors, t, k, discretes, prob, alg, interp, dense,
-        tslocation, stats, alg_choice, retcode, resid = nothing,
-        original = nothing, saved_subsystem = nothing
+        tslocation, stats, alg_choice, retcode, resid,
+        original, saved_subsystem
     ) where {T, N}
     return ODESolution{
         T, N, typeof(u), typeof(u_analytic), typeof(errors), typeof(t),
@@ -284,7 +274,7 @@ function (sol::AbstractODESolution)(
     ) where {deriv}
     A = sol.interp(t, idxs, deriv, sol.prob.p, continuity)
     p = hasproperty(sol.prob, :p) ? sol.prob.p : nothing
-    return DiffEqArray(A.u, A.t, p, sol)
+    return DiffEqArray(A.u, A.t, p, sol; interp = sol.interp, dense = sol.dense)
 end
 function (sol::AbstractODESolution)(
         t::AbstractVector{<:Number}, ::Type{deriv},
@@ -299,7 +289,7 @@ function (sol::AbstractODESolution)(
     end
     A = sol.interp(t, idxs, deriv, sol.prob.p, continuity)
     p = hasproperty(sol.prob, :p) ? sol.prob.p : nothing
-    return DiffEqArray(A.u, A.t, p, sol)
+    return DiffEqArray(A.u, A.t, p, sol; interp = sol.interp, dense = sol.dense)
 end
 
 function (sol::AbstractODESolution)(
@@ -361,7 +351,10 @@ function (sol::AbstractODESolution)(
     getter = getsym(sol, idxs)
     if is_parameter_timeseries(sol) == NotTimeseries() || !is_discrete_expression(sol, idxs)
         interp_sol = augment(sol.interp(t, nothing, deriv, p, continuity), sol)
-        return DiffEqArray(getter(interp_sol), t, p, sol)
+        return DiffEqArray(
+            getter(interp_sol), t, p, sol;
+            interp = sol.interp, dense = sol.dense
+        )
     end
     discretes = get_interpolated_discretes(sol, t, deriv, continuity)
     interp_sol = sol.interp(t, nothing, deriv, p, continuity)
@@ -372,7 +365,10 @@ function (sol::AbstractODESolution)(
         end
         return getter(ProblemState(; u = interp_sol.u[ti], p = ps, t = t[ti]))
     end
-    return DiffEqArray(u, t, p, sol; discretes)
+    return DiffEqArray(
+        u, t, p, sol; discretes,
+        interp = sol.interp, dense = sol.dense
+    )
 end
 
 function (sol::AbstractODESolution)(
@@ -387,7 +383,10 @@ function (sol::AbstractODESolution)(
     getter = getsym(sol, idxs)
     if is_parameter_timeseries(sol) == NotTimeseries() || !is_discrete_expression(sol, idxs)
         interp_sol = augment(sol.interp(t, nothing, deriv, p, continuity), sol)
-        return DiffEqArray(getter(interp_sol), t, p, sol)
+        return DiffEqArray(
+            getter(interp_sol), t, p, sol;
+            interp = sol.interp, dense = sol.dense
+        )
     end
     discretes = get_interpolated_discretes(sol, t, deriv, continuity)
     interp_sol = sol.interp(t, nothing, deriv, p, continuity)
@@ -398,7 +397,10 @@ function (sol::AbstractODESolution)(
         end
         return getter(ProblemState(; u = interp_sol.u[ti], p = ps, t = t[ti]))
     end
-    return DiffEqArray(u, t, p, sol; discretes)
+    return DiffEqArray(
+        u, t, p, sol; discretes,
+        interp = sol.interp, dense = sol.dense
+    )
 end
 
 struct DDESolutionHistoryWrapper{T}
@@ -502,7 +504,7 @@ function build_solution(
         k = nothing,
         alg_choice = nothing,
         interp = LinearInterpolation(t, u),
-        retcode = ReturnCode.Default, destats = missing, stats = nothing,
+        retcode = ReturnCode.Default, stats = nothing,
         resid = nothing, original = nothing,
         saved_subsystem = nothing,
         kwargs...
@@ -523,16 +525,6 @@ function build_solution(
         f = prob.f[1]
     else
         f = prob.f
-    end
-
-    if !ismissing(destats)
-        msg = "`destats` kwarg has been deprecated in favor of `stats`"
-        if stats !== nothing
-            msg *= " `stats` kwarg is also provided, ignoring `destats` kwarg."
-        else
-            stats = destats
-        end
-        Base.depwarn(msg, :build_solution)
     end
 
     ps = parameter_values(prob)
@@ -687,9 +679,22 @@ end
 function solution_new_original_retcode(
         sol::ODESolution{T, N}, original, retcode, resid
     ) where {T, N}
-    @reset sol.original = original
-    @reset sol.retcode = retcode
-    return @set sol.resid = resid
+    # Reconstruct the ODESolution directly rather than going through the
+    # `@reset` / `ConstructionBase.setproperties` chain. The `@reset` form
+    # expands into three sequential `setproperties` calls, each of which
+    # threads through `merge(getproperties(sol), patch)` and back through
+    # `ODESolution{T, N}(...)`. That call graph exceeds Julia's inference
+    # limits for non-trivial callers (e.g. a `::NonlinearSolution` bare
+    # annotation on the caller), causing the rebuilt solution's type to
+    # widen all the way to `ODESolution` (bare UnionAll). A single direct
+    # inner-constructor call preserves the concrete type parameters that
+    # inference can derive from `sol` plus the new `original`/`resid`.
+    return ODESolution{T, N}(
+        sol.u, sol.u_analytic, sol.errors, sol.t, sol.k,
+        sol.discretes, sol.prob, sol.alg, sol.interp, sol.dense,
+        sol.tslocation, sol.stats, sol.alg_choice, retcode,
+        resid, original, sol.saved_subsystem,
+    )
 end
 
 function solution_slice(sol::ODESolution{T, N}, I) where {T, N}

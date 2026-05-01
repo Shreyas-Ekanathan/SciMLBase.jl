@@ -21,38 +21,6 @@ import SciMLStructures
     y, odefunction_remake_back
 end
 
-# This method resolves the ambiguity with the pullback defined in
-# RecursiveArrayToolsZygoteExt
-# https://github.com/SciML/RecursiveArrayTools.jl/blob/d06ecb856f43bc5e37cbaf50e5f63c578bf3f1bd/ext/RecursiveArrayToolsZygoteExt.jl#L67
-@adjoint function Base.getindex(VA::ODESolution, i::Int, j::Int)
-    function ODESolution_getindex_pullback(Δ)
-        du = [
-            m == j ? [i == k ? Δ : zero(VA.u[1][1]) for k in 1:length(VA.u[1])] :
-                zero(VA.u[1]) for m in 1:length(VA.u)
-        ]
-        dp = zero(VA.prob.p)
-        dprob = remake(VA.prob, p = dp)
-        du, dprob
-        T = eltype(eltype(VA.u))
-        if dprob.u0 === nothing
-            N = 2
-        elseif dprob isa SciMLBase.BVProblem && !hasmethod(size, Tuple{typeof(dprob.u0)})
-            __u0 = hasmethod(dprob.u0, Tuple{typeof(dprob.p), typeof(first(dprob.tspan))}) ?
-                dprob.u0(dprob.p, first(dprob.tspan)) : dprob.u0(first(dprob.tspan))
-            N = length((size(__u0)..., length(du)))
-        else
-            N = length((size(dprob.u0)..., length(du)))
-        end
-        Δ′ = ODESolution{T, N}(
-            du, nothing, nothing,
-            VA.t, VA.k, VA.discretes, dprob, VA.alg, VA.interp, VA.dense, 0, VA.stats,
-            VA.alg_choice, VA.retcode
-        )
-        (Δ′, nothing, nothing)
-    end
-    VA[i, j], ODESolution_getindex_pullback
-end
-
 @adjoint function Base.getindex(VA::ODESolution, sym, j::Integer)
     res, pullback = ChainRulesCore.rrule(Zygote.ZygoteRuleConfig(), getindex, VA, sym, j)
     return res, Base.tail ∘ pullback
@@ -84,15 +52,33 @@ end
     out, EnsembleSolution_adjoint
 end
 
-@adjoint function Base.getindex(VA::ODESolution, i::Int)
-    function ODESolution_getindex_pullback(Δ)
-        Δ′ = [
-            (i == j ? Δ : Zygote.FillArrays.Fill(zero(eltype(x)), size(x)))
-                for (x, j) in zip(VA.u, 1:length(VA))
-        ]
-        (Δ′, nothing)
+# `sol[i::Integer]`: under RecursiveArrayTools v4 `AbstractVectorOfArray`
+# subtypes `AbstractArray`, so linear integer indexing returns the i-th
+# scalar element in column-major order over the underlying state-by-time
+# layout (i.e. `VA[CartesianIndices(size(VA))[i]]`), NOT the i-th timestep
+# vector. A dedicated adjoint is still needed here to keep dispatch from
+# falling through to the broader `Base.getindex(VA::ODESolution, sym)`
+# rule below (which would mis-interpret `i` as a state-variable index;
+# #1325). The pullback scatters the scalar cotangent into the matching
+# slot of `VA.u`.
+@adjoint function Base.getindex(VA::ODESolution, i::Integer)
+    inds = Tuple(CartesianIndices(size(VA))[i])
+    front_inds = Base.front(inds)
+    step_idx = last(inds)
+    y = VA.u[step_idx][front_inds...]
+    function ODESolution_scalar_pullback(Δ)
+        Δ′ = map(enumerate(VA.u)) do (k, x)
+            if k == step_idx
+                δu = zero(x)
+                δu[front_inds...] = Δ
+                δu
+            else
+                Zygote.FillArrays.Fill(zero(eltype(x)), size(x))
+            end
+        end
+        return (Δ′, nothing)
     end
-    VA[:, i], ODESolution_getindex_pullback
+    return y, ODESolution_scalar_pullback
 end
 
 @adjoint function Base.getindex(VA::ODESolution, sym)
